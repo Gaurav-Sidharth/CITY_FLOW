@@ -32,6 +32,8 @@ STOPS = {
     "rajendra_nagar":    {"name": "Rajendra Nagar",         "lat": 30.3050, "lng": 78.0350},
     "kishanpur":         {"name": "Kishanpur",              "lat": 30.3120, "lng": 78.0050},
     "clement_town":      {"name": "Clement Town",           "lat": 30.2800, "lng": 78.0000},
+    "subhash_nagar":     {"name": "Subhash Nagar",          "lat": 30.2720, "lng": 77.9950},
+    "graphic_era":       {"name": "Graphic Era Chowk",      "lat": 30.2700, "lng": 77.9980},
     "selaqui":           {"name": "Selaqui",                "lat": 30.3600, "lng": 77.8600},
     "race_course":       {"name": "Race Course",            "lat": 30.3050, "lng": 78.0480},
     "adhoiwala":         {"name": "Adhoiwala",              "lat": 30.3000, "lng": 78.0450},
@@ -44,15 +46,22 @@ STOPS = {
     "lachhiwala":        {"name": "Lachhiwala",              "lat": 30.2600, "lng": 78.1100},
     "rani_bagh":         {"name": "Rani Bagh",              "lat": 30.3230, "lng": 78.0300},
     "saharanpur_chowk":  {"name": "Saharanpur Chowk",       "lat": 30.2900, "lng": 78.0050},
+    "fri":               {"name": "FRI Main Gate",          "lat": 30.3420, "lng": 77.9980},
+    "raipur":            {"name": "Raipur",                 "lat": 30.3120, "lng": 78.0920},
+    "kandholi":          {"name": "Kandholi",               "lat": 30.3600, "lng": 78.0800}
 }
 
 ROUTES = [
     {"id": "R01", "name": "Karanpur → ISBT", "color": "#00C9FF", "stops": ["karanpur", "clock_tower", "gandhi_road", "paltan_bazaar", "railway_station", "doon_hospital", "dalanwala", "adhoiwala", "race_course", "nehru_colony", "rispana_bridge", "isbt"]},
     {"id": "R02", "name": "Rani Bagh → Jakhan", "color": "#FF6B35", "stops": ["rani_bagh", "clock_tower", "survey_chowk", "ec_road", "ballupur_chowk", "rajpur_road", "jakhan"]},
     {"id": "R03", "name": "Prem Nagar → Sahastradhara", "color": "#A8FF78", "stops": ["prem_nagar", "chakrata_road", "vasant_vihar", "clock_tower", "survey_chowk", "rajpur_road", "niranjanpur", "dharampur", "sahastradhara"]},
-    {"id": "R04", "name": "Mothrowala → Mussoorie Road", "color": "#FFD700", "stops": ["mothrowala", "clement_town", "saharanpur_chowk", "haridwar_road", "isbt", "rispana_bridge", "dalanwala", "doon_hospital", "railway_station", "rajendra_nagar", "clock_tower", "ballupur_chowk", "mussoorie_road"]},
+    {"id": "R04", "name": "Mothrowala → Mussoorie Road", "color": "#FFD700", "stops": ["mothrowala", "subhash_nagar", "clement_town", "saharanpur_chowk", "haridwar_road", "isbt", "rispana_bridge", "dalanwala", "doon_hospital", "railway_station", "rajendra_nagar", "clock_tower", "ballupur_chowk", "mussoorie_road"]},
     {"id": "R05", "name": "IT Park → Nehru Colony", "color": "#FF6EFF", "stops": ["it_park", "chakrata_road", "kargi_chowk", "kishanpur", "ec_road", "gandhi_road", "paltan_bazaar", "railway_station", "doon_hospital", "nehru_colony"]},
-    {"id": "R06", "name": "Selaqui → Lachhiwala", "color": "#B983FF", "stops": ["selaqui", "vikasnagar_road", "chakrata_road", "kargi_chowk", "clock_tower", "survey_chowk", "doon_hospital", "rispana_bridge", "lachhiwala"]}
+    {"id": "R06", "name": "Selaqui → Lachhiwala", "color": "#B983FF", "stops": ["selaqui", "vikasnagar_road", "chakrata_road", "kargi_chowk", "clock_tower", "survey_chowk", "doon_hospital", "rispana_bridge", "lachhiwala"]},
+    {"id": "R07", "name": "ISBT ↔ Clement Town Shuttle", "color": "#FF2E93", "stops": ["isbt", "haridwar_road", "saharanpur_chowk", "clement_town", "graphic_era", "subhash_nagar", "mothrowala"]},
+    {"id": "R08", "name": "Clock Tower ↔ Clement Town Express", "color": "#00FFA3", "stops": ["clock_tower", "gandhi_road", "railway_station", "saharanpur_chowk", "isbt", "clement_town", "graphic_era"]},
+    {"id": "R09", "name": "Prem Nagar ↔ ISBT Direct", "color": "#FF9F1C", "stops": ["prem_nagar", "fri", "chakrata_road", "ballupur_chowk", "kargi_chowk", "isbt"]},
+    {"id": "R10", "name": "Mussoorie Road ↔ ISBT Feeder", "color": "#B388FF", "stops": ["mussoorie_road", "kandholi", "jakhan", "rajpur_road", "survey_chowk", "clock_tower", "railway_station", "isbt"]}
 ]
 ROUTES_BY_ID = {r["id"]: r for r in ROUTES}
 
@@ -176,19 +185,28 @@ def interpolate_path(points, point_cum, target_dist):
             return round(lat, 5), round(lng, 5)
     return points[-1][0], points[-1][1]
 
-def estimate_eta_backend(route, live, target_stop_id):
+def estimate_eta_backend(route, live, target_stop_id, required_direction=None):
     stops = route["stops"]
     if target_stop_id not in stops: return None
+    
+    if required_direction is not None and live["direction"] != required_direction:
+        return "Opposite Dir."
+        
     road = get_road_route(route)
     target_idx = stops.index(target_stop_id)
     target_dist = road["stop_cum"][target_idx]
     
-    if live["direction"] == -1: return "Opposite Dir."
-    if target_dist < live["dist"]: return "Passed"
-    rem_m = target_dist - live["dist"]
+    if live["direction"] == 1:
+        if target_dist < live["dist"]: return "Passed"
+        rem_m = target_dist - live["dist"]
+    else:
+        if target_dist > live["dist"]: return "Passed"
+        rem_m = live["dist"] - target_dist
+        
     if live.get("pause_time", 0) > 0 and rem_m == 0: return "At Stop"
-    mins = round((rem_m / 1000) / (live["speed_display"] / 60))
-    return f"{max(mins, 1)} min"
+    mins = max(1, round((rem_m / 1000) / (live["speed_display"] / 60)))
+    km = round(rem_m / 1000, 1)
+    return f"{mins} min ({km} km)"
 
 def find_journey_bfs(from_id, to_id):
     direct = [r for r in ROUTES if from_id in r["stops"] and to_id in r["stops"]]
@@ -225,14 +243,6 @@ def find_journey_bfs(from_id, to_id):
                     
     return {"type": "none"}
 
-def routes_serving_both(from_stop_id, to_stop_id):
-    results = []
-    for route in ROUTES:
-        stops = route["stops"]
-        if from_stop_id in stops and to_stop_id in stops:
-            results.append(route)
-    return results
-
 TICK_SECONDS = 2.0
 bus_lock = threading.Lock()
 BUS_STATE = {}
@@ -243,17 +253,36 @@ def init_bus_state():
             stops = route["stops"]
             route["active_bus_ids"] = []
             road = get_road_route(route)
-            for i in range(len(stops) - 1):
-                bus_id = f"{route['id']}_bus_{i}"
+            num_stops = len(stops)
+
+            # 1. Forward-Moving Buses (direction: 1)
+            for i in range(0, num_stops - 1, 2):
+                bus_id = f"{route['id']}_up_{i+1}"
                 route["active_bus_ids"].append(bus_id)
                 start_dist = (road["stop_cum"][i] + road["stop_cum"][i+1]) / 2.0
                 lat, lng = interpolate_path(road["points"], road["point_cum"], start_dist)
-                speed_kmh = random.randint(30, 45)
+                speed_kmh = random.randint(34, 46)
                 BUS_STATE[bus_id] = {
                     "route_id": route["id"], "dist": start_dist, "direction": 1,
                     "last_stop_idx": i, "next_stop_idx": i + 1, "pause_time": 0.0,
-                    "status": "On Time", "occupancy": random.randint(10, 80),
-                    "type": random.choice(["Bus", "Shared Van", "Shared Cab"]),
+                    "status": "On Time", "occupancy": random.randint(15, 75),
+                    "type": random.choice(["Electric Bus", "City Bus", "Rapid Van"]),
+                    "lat": lat, "lng": lng, "speed_display": speed_kmh,
+                    "speed_m_tick": (speed_kmh * 1000 / 3600) * TICK_SECONDS
+                }
+
+            # 2. Return-Moving Buses (direction: -1)
+            for i in range(num_stops - 1, 0, -2):
+                bus_id = f"{route['id']}_dn_{num_stops - i}"
+                route["active_bus_ids"].append(bus_id)
+                start_dist = (road["stop_cum"][i] + road["stop_cum"][i-1]) / 2.0
+                lat, lng = interpolate_path(road["points"], road["point_cum"], start_dist)
+                speed_kmh = random.randint(32, 44)
+                BUS_STATE[bus_id] = {
+                    "route_id": route["id"], "dist": start_dist, "direction": -1,
+                    "last_stop_idx": i, "next_stop_idx": i - 1, "pause_time": 0.0,
+                    "status": "On Time", "occupancy": random.randint(20, 80),
+                    "type": random.choice(["Electric Bus", "City Bus", "Rapid Van"]),
                     "lat": lat, "lng": lng, "speed_display": speed_kmh,
                     "speed_m_tick": (speed_kmh * 1000 / 3600) * TICK_SECONDS
                 }
@@ -399,6 +428,11 @@ def find_buses():
         stops_data = [{"id": s, **STOPS[s]} for s in route["stops"]]
         road = get_road_route(route)
         road_points = road["points"] if road else [[STOPS[s]["lat"], STOPS[s]["lng"]] for s in route["stops"]]
+        
+        req_dir = None
+        if r_from_id in route["stops"] and r_to_id in route["stops"]:
+            req_dir = 1 if route["stops"].index(r_from_id) < route["stops"].index(r_to_id) else -1
+
         buses_data = []
         for bus_id in route.get("active_bus_ids", []):
             live = BUS_STATE[bus_id]
@@ -409,7 +443,8 @@ def find_buses():
             buses_data.append({
                 "id": bus_id, "lat": live["lat"], "lng": live["lng"], "status": live["status"], 
                 "occupancy": live["occupancy"], "type": live.get("type", "Bus"),
-                "eta_from": estimate_eta_backend(route, live, r_from_id), "eta_to": estimate_eta_backend(route, live, r_to_id),
+                "eta_from": estimate_eta_backend(route, live, r_from_id, req_dir), 
+                "eta_to": estimate_eta_backend(route, live, r_to_id, req_dir),
                 "progress": round(live["dist"] / max(road["total_dist"], 1), 3), "direction": live["direction"],
                 "last_stop": STOPS[route["stops"][live["last_stop_idx"]]]["name"],
                 "next_stop": STOPS[route["stops"][live["next_stop_idx"]]]["name"], "speed": speed_str, "distance": dist_str
