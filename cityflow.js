@@ -1,5 +1,5 @@
 'use strict';
-console.log('%cCityFlow client build: v15 (Final Stack)', 'color:#00E5FF;font-weight:bold');
+console.log('%cCityFlow client build: v18 (Best Bus Recommendation Engine)', 'color:#00E5FF;font-weight:bold');
 const TICK_MS = 2000;
 
 const state = {
@@ -10,7 +10,7 @@ const state = {
 
 let map;
 function initMap() {
-    map = L.map('map', { center: [30.3200, 78.0400], zoom: 13, zoomControl: true, attributionControl: false });
+    map = L.map('map', { center: [30.3150, 78.0300], zoom: 13, zoomControl: true, attributionControl: false });
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 }
 
@@ -37,22 +37,26 @@ function setConnectionState(mode) {
     else { ring.classList.add('offline'); txt.textContent = 'OFFLINE'; }
 }
 
-function computeEta(route, progress, direction, speedStr, targetStopId) {
+function computeEta(route, progress, direction, speedStr, targetStopId, requiredDirection = null) {
     if (!targetStopId || !route.stop_cum) return null;
-    if (direction === -1) return 'Opposite Dir.';
-    const idx = route.stops.map(s => s.id).indexOf(targetStopId);
+    
+    if (requiredDirection !== null && direction !== requiredDirection) return 'Opposite Dir.';
+    
+    const idx = route.stops.findIndex(s => s.id === targetStopId);
     if (idx === -1) return null;
     
     const targetDist = route.stop_cum[idx];
     const currentDist = progress * route.total_dist;
-    const remaining = targetDist - currentDist;
     
-    if (Math.abs(remaining) < 10) return 'At Stop';
-    if (remaining < 0) return 'Passed';
+    const remaining = direction === 1 ? (targetDist - currentDist) : (currentDist - targetDist);
     
-    const speedKmh = parseInt(speedStr, 10) || 30;
-    const mins = Math.round((remaining / 1000) / (speedKmh / 60));
-    return `${Math.max(1, mins)} min`;
+    if (remaining < -25) return 'Passed';
+    if (Math.abs(remaining) <= 25) return 'At Stop';
+    
+    const speedKmh = parseInt(speedStr, 10) || 35;
+    const mins = Math.max(1, Math.round((remaining / 1000) / (speedKmh / 60)));
+    const km = (remaining / 1000).toFixed(1);
+    return `${mins} min (${km} km)`;
 }
 
 function getArrivalSortScore(bus) {
@@ -68,19 +72,44 @@ function getArrivalSortScore(bus) {
         const m = bus.eta_to.match(/(\d+)\s*min/);
         if (m) return parseInt(m[1], 10);
     }
-    if (bus.distance) {
-        if (bus.distance === 'At Stop') return 0;
-        const dm = bus.distance.match(/(\d+)\s*m/);
-        if (dm) return parseInt(dm[1], 10) / 100;
-    }
     return 9999;
+}
+
+function findOverallBestBus(routes) {
+    let best = null;
+    let minScore = Infinity;
+
+    routes.forEach(route => {
+        route.buses.forEach(b => {
+            if (!b.eta_from || b.eta_from === 'Passed' || b.eta_from === 'Opposite Dir.') return;
+            const arrivalMinutes = getArrivalSortScore(b);
+            // Multi-factor score: arrival time (primary) + occupancy penalty (secondary)
+            const score = arrivalMinutes * 1000 + (b.occupancy || 50);
+            if (score < minScore) {
+                minScore = score;
+                best = { bus: b, route: route };
+            }
+        });
+    });
+    return best;
 }
 
 function handleBusPositions(payload) {
     const liveBuses = payload.buses || {};
     if (!state.activeRoutes.length) return;
     let touched = false;
+    
     state.activeRoutes.forEach(route => {
+        const searchFrom = route.search_from_id || (state.fromStop ? state.fromStop.id : null);
+        const searchTo = route.search_to_id || (state.toStop ? state.toStop.id : null);
+        
+        let reqDir = null;
+        if (searchFrom && searchTo) {
+            const fromIdx = route.stops.findIndex(s => s.id === searchFrom);
+            const toIdx = route.stops.findIndex(s => s.id === searchTo);
+            if (fromIdx !== -1 && toIdx !== -1) reqDir = fromIdx < toIdx ? 1 : -1;
+        }
+
         route.buses.forEach(bus => {
             const live = liveBuses[bus.id];
             if (!live) return;
@@ -91,13 +120,11 @@ function handleBusPositions(payload) {
             bus.last_stop = live.last_stop; bus.next_stop = live.next_stop;
             bus.speed = live.speed; bus.distance = live.distance;
             
-            const searchFrom = route.search_from_id || (state.fromStop ? state.fromStop.id : null);
-            const searchTo = route.search_to_id || (state.toStop ? state.toStop.id : null);
-            
-            bus.eta_from = searchFrom ? computeEta(route, live.progress, live.direction, live.speed, searchFrom) : null;
-            bus.eta_to = searchTo ? computeEta(route, live.progress, live.direction, live.speed, searchTo) : null;
+            bus.eta_from = searchFrom ? computeEta(route, live.progress, live.direction, live.speed, searchFrom, reqDir) : null;
+            bus.eta_to = searchTo ? computeEta(route, live.progress, live.direction, live.speed, searchTo, reqDir) : null;
         });
     });
+    
     if (touched) {
         state.activeRoutes.forEach(route => route.buses.forEach(bus => addOrUpdateBusMarker(bus, route, true)));
         updateBusList(state.activeRoutes);
@@ -213,8 +240,41 @@ function setSearching(val) {
     document.getElementById('status-text').textContent = val ? 'SEARCHING' : (state.connected ? 'LIVE' : 'OFFLINE');
 }
 
+function renderBestBusBanner(best) {
+    if (!best) return '';
+    const { bus, route } = best;
+    const isSelected = state.selectedBusId === bus.id;
+    return `
+    <div class="best-bus-card" style="background: linear-gradient(135deg, rgba(0, 229, 255, 0.12), rgba(13, 16, 23, 0.95)); border: 1.5px solid #00E5FF; box-shadow: 0 0 16px rgba(0, 229, 255, 0.25); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; position: relative;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: 8px;">
+            <div style="display:flex; align-items:center; gap: 6px;">
+                <span style="background: #00E5FF; color: #07090e; font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 4px; letter-spacing: 0.08em;">★ BEST BUS TO TAKE</span>
+                <span style="font-size: 11px; color: #94a3b8; font-family: var(--font-m);">${bus.id}</span>
+            </div>
+            <span class="status-pill ${bus.status === 'Delayed' ? 'pill-delayed' : bus.status === 'Early' ? 'pill-early' : 'pill-ontime'}">${bus.status}</span>
+        </div>
+        <div style="font-size: 0.9rem; font-weight: 700; color: #fff; margin-bottom: 4px;">
+            <span style="display:inline-block; width: 8px; height: 8px; border-radius: 50%; background: ${route.color}; margin-right: 6px;"></span>${route.name}
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 8px;">
+            <div>
+                <div style="color: #00FF94; font-size: 0.82rem; font-weight: 700; font-family: var(--font-m);">⏱️ Reaches You In: ${bus.eta_from}</div>
+                ${bus.eta_to && bus.eta_to !== 'Passed' ? `<div style="color: #94a3b8; font-size: 0.68rem; margin-top: 2px;">🏁 Reaches Destination: ${bus.eta_to}</div>` : ''}
+                <div style="color: #cbd5e1; font-size: 0.68rem; margin-top: 2px;">👥 Occupancy: <span style="font-weight: 600; color: ${bus.occupancy > 80 ? 'var(--red)' : bus.occupancy > 55 ? 'var(--yellow)' : 'var(--green)'};">${bus.occupancy}% full</span> (${bus.type || 'Bus'})</div>
+            </div>
+            <button onclick="selectSingleBus('${bus.id}', '${route.id}')" style="background: #00E5FF; color: #07090e; border: none; border-radius: 6px; padding: 6px 12px; font-weight: 700; font-size: 0.72rem; cursor: pointer; letter-spacing: 0.05em; transition: transform 0.15s;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+                ${isSelected ? '✓ TRACKING' : 'TRACK BUS 📍'}
+            </button>
+        </div>
+    </div>`;
+}
+
 function renderResults(routes, notes) {
     let html = notes && notes.length ? `<div class="snap-note">${notes.map(n => `⚡ ${n}`).join('<br/>')}</div>` : '';
+    
+    const best = findOverallBestBus(routes);
+    html += `<div id="best-bus-container">${renderBestBusBanner(best)}</div>`;
+
     html += `<div class="result-header"><span>${routes.length} ROUTE${routes.length > 1 ? 'S' : ''} FOUND</span><span>${routes.reduce((s, r) => s + r.buses.length, 0)} BUSES LIVE</span></div>`;
     
     html += routes.map(r => {
@@ -223,11 +283,11 @@ function renderResults(routes, notes) {
         <div class="route-result-card" data-route="${r.id}">
             <div class="route-card-header">
                 <div class="route-color-line" style="background:${r.color};box-shadow:0 0 8px ${r.color}66"></div>
-                <div><div class="route-card-name">${r.name}</div><div class="route-card-id">${r.id} · ${r.buses.length} buses</div></div>
+                <div><div class="route-card-name">${r.name}</div><div class="route-card-id">${r.id} · ${r.buses.length} active buses</div></div>
             </div>
             <div class="route-all-stops">${r.stops.map(s => s.name).join(' · ')}</div>
             <div class="bus-list-container" id="bus-list-${r.id}">
-                ${r.buses.map(b => buildBusRowHtml(b, r)).join('')}
+                ${r.buses.map(b => buildBusRowHtml(b, r, best && best.bus.id === b.id)).join('')}
             </div>
         </div>`
     }).join('');
@@ -237,11 +297,17 @@ function renderResults(routes, notes) {
 }
 
 function updateBusList(routes) {
+    const best = findOverallBestBus(routes);
+    const bestContainer = document.getElementById('best-bus-container');
+    if (bestContainer) {
+        bestContainer.innerHTML = renderBestBusBanner(best);
+    }
+
     routes.forEach(route => {
         route.buses.sort((a, b) => getArrivalSortScore(a) - getArrivalSortScore(b));
         const container = document.getElementById(`bus-list-${route.id}`);
         if (container) {
-            container.innerHTML = route.buses.map(b => buildBusRowHtml(b, route)).join('');
+            container.innerHTML = route.buses.map(b => buildBusRowHtml(b, route, best && best.bus.id === b.id)).join('');
             container.querySelectorAll('.bus-row').forEach(row => {
                 row.addEventListener('click', () => {
                     selectSingleBus(row.dataset.bus, route.id);
@@ -251,23 +317,39 @@ function updateBusList(routes) {
     });
 }
 
-function buildBusRowHtml(b, route) {
-    let etaText = '—';
-    if (b.eta_from === 'At Stop') etaText = '⚡ Arrived at your stop';
-    else if (b.eta_from === 'Opposite Dir.') etaText = 'Moving opposite direction';
-    else if (b.eta_from && b.eta_from !== 'Passed') etaText = `Arrives in ${b.eta_from}`;
-    else if (b.eta_to) etaText = (route && route.is_transfer_leg && b.eta_to !== 'Passed') ? `Transfer in ${b.eta_to}` : `Destination in ${b.eta_to}`;
+function buildBusRowHtml(b, route, isBest = false) {
+    let etaBadge = '';
+    if (b.eta_from === 'At Stop') {
+        etaBadge = `<div style="color:#00FF94;font-size:0.75rem;font-weight:700;margin-top:3px;">⚡ ARRIVED AT YOUR STOP</div>`;
+    } else if (b.eta_from === 'Opposite Dir.') {
+        etaBadge = `<div style="color:#64748b;font-size:0.65rem;margin-top:2px;">🔄 Opposite Direction (Returning)</div>`;
+    } else if (b.eta_from === 'Passed') {
+        etaBadge = `<div style="color:#ef4444;font-size:0.65rem;margin-top:2px;">❌ Passed your stop</div>`;
+    } else if (b.eta_from) {
+        etaBadge = `<div style="color:#00E5FF;font-size:0.75rem;font-weight:700;margin-top:3px;">⏱️ REACHES YOU IN: ${b.eta_from}</div>`;
+    }
+
+    let destText = '';
+    if (b.eta_to && b.eta_to !== 'Passed' && b.eta_to !== 'Opposite Dir.') {
+        destText = `<div style="font-size:0.63rem;color:#94a3b8;margin-top:2px;">🏁 Destination: ${b.eta_to}</div>`;
+    }
     
     const isSelected = state.selectedBusId === b.id;
-    const selectedStyle = isSelected ? 'border: 2px solid #00E5FF; background: rgba(0, 229, 255, 0.15); box-shadow: 0 0 12px rgba(0, 229, 255, 0.35);' : '';
+    let selectedStyle = isSelected ? 'border: 2px solid #00E5FF; background: rgba(0, 229, 255, 0.15); box-shadow: 0 0 12px rgba(0, 229, 255, 0.35);' : '';
+    if (!isSelected && isBest) {
+        selectedStyle = 'border: 1px solid rgba(0, 229, 255, 0.5); background: rgba(0, 229, 255, 0.05);';
+    }
+
+    const bestTag = isBest ? `<span style="background:rgba(0,229,255,0.2); border:1px solid #00E5FF; color:#00E5FF; font-size:9px; font-weight:700; padding:1px 5px; border-radius:3px; margin-left:6px;">★ BEST PICK</span>` : '';
 
     return `
     <div class="bus-row" data-bus="${b.id}" style="cursor:pointer; transition: all 0.2s ease; ${selectedStyle}">
         <div class="bus-row-icon">🚌</div>
         <div class="bus-row-info">
-            <div class="bus-row-id">${b.id} <span style="font-size:10px; color:#94a3b8; font-weight:normal;">(${b.speed || ''})</span></div>
+            <div class="bus-row-id">${b.id} ${bestTag} <span style="font-size:10px; color:#94a3b8; font-weight:normal;">(${b.type || 'Bus'} · ${b.speed || ''})</span></div>
             <div class="bus-row-stops">${b.last_stop && b.next_stop ? `${b.last_stop} →${b.next_stop}` : ''}</div>
-            <div class="bus-row-eta" style="color:#00E5FF; font-weight:600;">${etaText}</div>
+            ${etaBadge}
+            ${destText}
         </div>
         <div class="bus-row-right">
             <span class="status-pill ${b.status === 'Delayed' ? 'pill-delayed' : b.status === 'Early' ? 'pill-early' : 'pill-ontime'}">${b.status}</span>
@@ -438,7 +520,23 @@ function addOrUpdateBusMarker(bus, route, animate) {
         html: `<div style="width:34px;height:34px;border-radius:50%;background:${route.color}18;border:2px solid ${ring};display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 0 12px ${ring}66;animation:busPulse 2s infinite;">🚌</div>`
     });
     
-    const popup = `<div class="popup-inner"><div class="popup-bus-id">${bus.id}</div><div class="popup-row"><span>Route</span><span style="color:${route.color}">${route.name}</span></div><div class="popup-row"><span>Status</span><span style="color:${ring}">${bus.status}</span></div><div class="popup-row"><span>Speed</span><span>${bus.speed || '—'}</span></div><div class="popup-row"><span>Dist. to Next</span><span>${bus.distance || '—'}</span></div><div class="popup-row"><span>Last stop</span><span>${bus.last_stop || '—'}</span></div><div class="popup-row"><span>Next stop</span><span>${bus.next_stop || '—'}</span></div><div class="popup-row"><span>ETA your stop</span><span>${bus.eta_from || '—'}</span></div><div class="popup-row"><span>ETA destination</span><span>${bus.eta_to || '—'}</span></div><div class="popup-row"><span>Occupancy</span><span style="color:${bus.occupancy > 80 ? '#FF3D5A' : bus.occupancy > 55 ? '#FFD600' : '#00FF94'}">${bus.occupancy}%</span></div></div>`;
+    const reachDisplay = (bus.eta_from && bus.eta_from !== 'Passed' && bus.eta_from !== 'Opposite Dir.') 
+        ? `<div class="popup-row" style="background:rgba(0,229,255,0.12);padding:4px 6px;border-radius:4px;margin-top:6px;"><span style="color:#00E5FF;font-weight:700;">⏱️ Reaches You</span><span style="color:#00E5FF;font-weight:700;">${bus.eta_from}</span></div>` 
+        : '';
+
+    const popup = `<div class="popup-inner">
+        <div class="popup-bus-id">${bus.id} <span style="font-size:10px;font-weight:normal;opacity:0.8;">(${bus.type || 'Bus'})</span></div>
+        <div class="popup-row"><span>Route</span><span style="color:${route.color}">${route.name}</span></div>
+        <div class="popup-row"><span>Status</span><span style="color:${ring}">${bus.status}</span></div>
+        <div class="popup-row"><span>Speed</span><span>${bus.speed || '—'}</span></div>
+        <div class="popup-row"><span>Dist. to Next Stop</span><span>${bus.distance || '—'}</span></div>
+        <div class="popup-row"><span>Last stop</span><span>${bus.last_stop || '—'}</span></div>
+        <div class="popup-row"><span>Next stop</span><span>${bus.next_stop || '—'}</span></div>
+        ${reachDisplay}
+        <div class="popup-row"><span>Destination ETA</span><span>${bus.eta_to || '—'}</span></div>
+        <div class="popup-row"><span>Occupancy</span><span style="color:${bus.occupancy > 80 ? '#FF3D5A' : bus.occupancy > 55 ? '#FFD600' : '#00FF94'}">${bus.occupancy}%</span></div>
+    </div>`;
+    
     const tooltipHtml = `<div style="font-family:'DM Mono', monospace; font-size:11px; font-weight:600; text-align:center; line-height:1.2; padding: 2px;">${bus.speed || '--'}<br><span style="opacity: 0.8; font-size:9px;">${bus.distance || '--'}</span></div>`;
     
     const target = L.latLng(bus.lat, bus.lng);
